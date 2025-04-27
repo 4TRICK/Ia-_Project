@@ -1,0 +1,24 @@
+# Конфигурация для server1 (UB124LTS)
+Host server1
+    HostName UB124LTS
+    User vboxuser
+    ForwardAgent yes
+    IdentityFile C:\Users\PC\.ssh\id_ed25519
+    IdentitiesOnly yes
+    #UserKnownHostsFile=NUL
+    AddKeysToAgent yes
+    ServerAliveInterval 60
+    ServerAliveCountMax 1200
+
+# Конфигурация для server2 (UB224LTS)
+Host server2
+    HostName UB224LTS
+    User vboxuser
+    ForwardAgent yes
+    IdentityFile C:\Users\PC\.ssh\key2
+    IdentitiesOnly yes
+    #UserKnownHostsFile=NUL
+    AddKeysToAgent yes
+    ServerAliveInterval 60
+    ServerAliveCountMax 1200
+

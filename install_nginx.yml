@@ -1,0 +1,195 @@
+---
+- name: Настройка Nginx, Prometheus, Grafana и мониторинга на VM1 и VM2
+  hosts:
+    - frontend
+    - backend
+  become: true
+  tasks:
+    # Установка Nginx на VM1 и VM2
+    - name: Установка Nginx на VM1 и VM2
+      apt:
+        name: nginx
+        state: present
+
+    # Конфигурация Nginx для reverse proxy и балансировки нагрузки на VM1
+    - name: Конфигурация Nginx для VM1
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          upstream backend_servers {
+              server 192.168.0.181;  # IP VM2
+              server 192.168.0.185;  # IP VM1
+          }
+
+          server {
+              listen 80;
+
+              location / {
+                  proxy_pass http://backend_servers;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      when: inventory_hostname == "frontend"
+
+    - name: Перезапуск Nginx на VM1
+      service:
+        name: nginx
+        state: restarted
+      when: inventory_hostname == "frontend"
+
+    # Установка Prometheus на VM1
+    - name: Установка Prometheus
+      apt:
+        name: prometheus
+        state: present
+      when: inventory_hostname == "frontend"
+
+    # Конфигурация Prometheus
+    - name: Настройка конфигурации Prometheus
+      copy:
+        dest: /etc/prometheus/prometheus.yml
+        content: |
+          global:
+            scrape_interval: 15s
+
+          scrape_configs:
+            - job_name: 'nginx'
+              static_configs:
+                - targets: ['192.168.0.185:80', '192.168.0.181:80']
+      when: inventory_hostname == "frontend"
+
+    - name: Запуск Prometheus
+      service:
+        name: prometheus
+        state: started
+        enabled: true
+      when: inventory_hostname == "frontend"
+
+    # Установка Grafana на VM1
+    - name: Добавление репозитория Grafana
+      apt_key:
+        url: https://packages.grafana.com/gpg.key
+        state: present
+      when: inventory_hostname == "frontend"
+
+    - name: Добавление репозитория Grafana в источники APT
+      apt_repository:
+        repo: 'deb https://packages.grafana.com/oss/deb stable main'
+        state: present
+      when: inventory_hostname == "frontend"
+
+    - name: Установка Grafana
+      apt:
+        name: grafana
+        state: present
+      when: inventory_hostname == "frontend"
+
+    - name: Запуск Grafana
+      service:
+        name: grafana-server
+        state: started
+        enabled: true
+      when: inventory_hostname == "frontend"
+
+    # Настройка алертинга в Prometheus для использования метрик CPU и памяти
+    - name: Настройка правил алертинга для Prometheus
+      copy:
+        dest: /etc/prometheus/rules.yml
+        content: |
+          groups:
+            - name: example
+              rules:
+                - alert: HighCPUUsage
+                  expr: avg(rate(cpu_seconds_total{mode="idle"}[5m])) by (instance) < 0.2
+                  for: 1m
+                  labels:
+                    severity: page
+                  annotations:
+                    summary: "CPU usage is high on {{ $labels.instance }}"
+                - alert: HighMemoryUsage
+                  expr: avg(process_resident_memory_bytes) by (instance) > 80e6
+                  for: 1m
+                  labels:
+                    severity: page
+                  annotations:
+                    summary: "Memory usage is high on {{ $labels.instance }}"
+      when: inventory_hostname == "frontend"
+
+    - name: Перезапуск Prometheus для применения алертов
+      service:
+        name: prometheus
+        state: restarted
+      when: inventory_hostname == "frontend"
+
+    # Настройка cron для автоматического перезапуска Nginx при высоком уровне нагрузки
+    - name: Установить cron задачу для перезапуска Nginx на основе нагрузки
+      cron:
+        name: "Auto-restart Nginx if high load"
+        minute: "*/5"
+        job: "/usr/local/bin/restart_nginx.sh"
+      when: inventory_hostname == "frontend"
+      
+    # Установка скрипта для перезапуска Nginx
+    - name: Размещение скрипта для перезапуска Nginx
+      copy:
+        dest: /usr/local/bin/restart_nginx.sh
+        content: |
+          #!/bin/bash
+          cpu_usage=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
+          memory_usage=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
+
+          if (( $(echo "$cpu_usage > 80" | bc -l) )); then
+              systemctl restart nginx
+          fi
+
+          if (( $(echo "$memory_usage > 80" | bc -l) )); then
+              systemctl restart nginx
+          fi
+      when: inventory_hostname == "frontend"
+
+    # Настройка мониторинга состояния на VM2
+    - name: Установка Prometheus Node Exporter на VM2
+      apt:
+        name: prometheus-node-exporter
+        state: present
+      when: inventory_hostname == "backend"
+
+    - name: Запуск Prometheus Node Exporter на VM2
+      service:
+        name: prometheus-node-exporter
+        state: started
+        enabled: true
+      when: inventory_hostname == "backend"
+
+    # Проверка доступности Prometheus на VM1
+    - name: Проверка доступности Prometheus на VM1
+      uri:
+        url: http://192.168.0.185:9090/metrics
+        method: GET
+        status_code: 200
+      register: result_prometheus_vm1
+      retries: 5
+      delay: 10
+      until: result_prometheus_vm1.status == 200
+      when: inventory_hostname == "frontend"
+
+    # Проверка доступности Prometheus Node Exporter на VM2
+    - name: Проверка доступности Prometheus Node Exporter на VM2
+      uri:
+        url: http://192.168.0.181:9100/metrics
+        method: GET
+        status_code: 200
+      register: result_node_exporter_vm2
+      retries: 5
+      delay: 10
+      until: result_node_exporter_vm2.status == 200
+      when: inventory_hostname == "backend"
+
+  handlers:
+    - name: Перезапуск Nginx
+      service:
+        name: nginx
+        state: restarted

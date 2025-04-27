@@ -1,0 +1,8 @@
+docker run -it --rm -v ${PWD}:/ansible -v $HOME/.ssh:/root/.ssh willhallonline/ansible:latest /bin/sh
+
+ansible-playbook -i /ansible/hosts /ansible/install_nginx.yml --ask-become-pass
+
+
+curl -I http://192.168.0.185
+
+curl http://192.168.0.181:9100/metrics
